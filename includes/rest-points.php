@@ -171,4 +171,73 @@ final class Zibll_Oauth_Points
             'points'  => $points,
         ), 200);
     }
+
+    /**
+     * GET /user/profile
+     * 
+     * 查询用户站点个人信息（昵称、推荐人数）
+     * 
+     * 参数（GET query）：
+     *   - appid    (string, 必须) 应用 ID
+     *   - openid   (string, 必须) 用户 OpenID
+     *   - sign     (string, 必须) 签名 = md5(appid + openid + appkey)
+     */
+    public static function profile(WP_REST_Request $request)
+    {
+        // 1. 参数提取
+        $appid  = trim((string) $request->get_param('appid'));
+        $openid = trim((string) $request->get_param('openid'));
+        $sign   = trim((string) $request->get_param('sign'));
+
+        // 2. 基础参数校验
+        if ($appid === '' || $openid === '' || $sign === '') {
+            return new WP_Error('missing_param', '缺少必要参数', array('status' => 400));
+        }
+
+        // 3. 验证应用
+        $app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
+        if (!$app_row) {
+            return new WP_Error('invalid_appid', 'AppID 无效', array('status' => 403));
+        }
+
+        $site = Zibll_Oauth_App_DB::to_site_array($app_row);
+        if (empty($site['enabled'])) {
+            return new WP_Error('app_not_online', '应用暂未上线', array('status' => 403));
+        }
+
+        $appkey = !empty($site['appkey']) ? (string) $site['appkey'] : '';
+        if ($appkey === '') {
+            return new WP_Error('app_config_error', '应用配置不完整', array('status' => 500));
+        }
+
+        // 4. 验证签名：md5(appid + openid + appkey)
+        $expected_sign = md5($appid . $openid . $appkey);
+        if (!hash_equals($expected_sign, $sign)) {
+            return new WP_Error('invalid_sign', '签名验证失败', array('status' => 403));
+        }
+
+        // 5. 通过 openid 查找 user_id
+        $user_id = Zibll_Oauth_Provider_Util::get_user_id_by_openid($appid, $openid);
+        if (!$user_id) {
+            return new WP_Error('user_not_found', 'OpenID 对应的用户不存在', array('status' => 404));
+        }
+
+        // 6. 获取用户信息
+        $user = get_user_by('id', $user_id);
+        if (!$user) {
+            return new WP_Error('user_not_found', '用户不存在', array('status' => 404));
+        }
+
+        $display_name = (string) $user->display_name;
+
+        // 推荐好友人数
+        $invite_count = (int) get_user_meta($user_id, 'invite_count', true);
+
+        return new WP_REST_Response(array(
+            'success'      => true,
+            'user_id'      => $user_id,
+            'display_name' => $display_name,
+            'invite_count' => $invite_count,
+        ), 200);
+    }
 }
