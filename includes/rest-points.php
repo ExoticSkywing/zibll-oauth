@@ -108,4 +108,67 @@ final class Zibll_Oauth_Points
             'message' => '积分充值成功',
         ), 200);
     }
+
+    /**
+     * GET /points/balance
+     * 
+     * 查询用户站点积分余额
+     * 
+     * 参数（GET query）：
+     *   - appid    (string, 必须) 应用 ID
+     *   - openid   (string, 必须) 用户 OpenID
+     *   - sign     (string, 必须) 签名 = md5(appid + openid + appkey)
+     */
+    public static function balance(WP_REST_Request $request)
+    {
+        // 1. 参数提取
+        $appid  = trim((string) $request->get_param('appid'));
+        $openid = trim((string) $request->get_param('openid'));
+        $sign   = trim((string) $request->get_param('sign'));
+
+        // 2. 基础参数校验
+        if ($appid === '' || $openid === '' || $sign === '') {
+            return new WP_Error('missing_param', '缺少必要参数', array('status' => 400));
+        }
+
+        // 3. 验证应用
+        $app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
+        if (!$app_row) {
+            return new WP_Error('invalid_appid', 'AppID 无效', array('status' => 403));
+        }
+
+        $site = Zibll_Oauth_App_DB::to_site_array($app_row);
+        if (empty($site['enabled'])) {
+            return new WP_Error('app_not_online', '应用暂未上线', array('status' => 403));
+        }
+
+        $appkey = !empty($site['appkey']) ? (string) $site['appkey'] : '';
+        if ($appkey === '') {
+            return new WP_Error('app_config_error', '应用配置不完整', array('status' => 500));
+        }
+
+        // 4. 验证签名：md5(appid + openid + appkey)
+        $expected_sign = md5($appid . $openid . $appkey);
+        if (!hash_equals($expected_sign, $sign)) {
+            return new WP_Error('invalid_sign', '签名验证失败', array('status' => 403));
+        }
+
+        // 5. 通过 openid 查找 user_id
+        $user_id = Zibll_Oauth_Provider_Util::get_user_id_by_openid($appid, $openid);
+        if (!$user_id) {
+            return new WP_Error('user_not_found', 'OpenID 对应的用户不存在', array('status' => 404));
+        }
+
+        // 6. 查询积分余额
+        $points = 0;
+        if (function_exists('zibpay_get_user_points')) {
+            $points = zibpay_get_user_points($user_id);
+        }
+
+        return new WP_REST_Response(array(
+            'success' => true,
+            'user_id' => $user_id,
+            'points'  => $points,
+        ), 200);
+    }
 }
