@@ -223,20 +223,45 @@ final class Zibll_Oauth_User_Center
 
             $appid = !empty($site['appid']) ? (string) $site['appid'] : '';
             $appkey = !empty($site['appkey']) ? (string) $site['appkey'] : '';
-            $appkey_mask = $appkey;
-            if ($appkey !== '' && strlen($appkey) > 10) {
-                $appkey_mask = substr($appkey, 0, 4) . '****' . substr($appkey, -4);
+            $appkey_revealed = !empty($site['appkey_revealed']) ? (int) $site['appkey_revealed'] : 0;
+            $is_approved = (isset($site['status']) && (int) $site['status'] === Zibll_Oauth_App_DB::STATUS_APPROVED);
+
+            // 首次展示逻辑：审核通过且从未展示过 -> 展示完整密钥并标记
+            $show_full_key = false;
+            if ($is_approved && $appkey !== '' && $appkey_revealed === 0) {
+                $show_full_key = true;
+                // 立即标记为已展示，下次加载时将只显示脱敏版本
+                Zibll_Oauth_App_DB::mark_appkey_revealed((int) $site['id']);
             }
+
+            $appkey_display = '';
+            if ($appkey !== '') {
+                if ($show_full_key) {
+                    $appkey_display = $appkey;
+                } else {
+                    // 脱敏展示
+                    if (strlen($appkey) > 10) {
+                        $appkey_display = substr($appkey, 0, 4) . '****' . substr($appkey, -4);
+                    } else {
+                        $appkey_display = $appkey;
+                    }
+                }
+            }
+
             $cred_html = '';
             if ($appid !== '' || $appkey !== '') {
                 $cred_html .= '<div class="muted-2-color em09 mt6">';
                 if ($appid !== '') {
                     $cred_html .= 'AppID：' . esc_html($appid) . ' ';
                 }
-                if ($appkey !== '') {
-                    $cred_html .= 'AppKey：' . esc_html($appkey_mask);
+                if ($appkey_display !== '') {
+                    $cred_html .= 'AppKey：' . esc_html($appkey_display);
                 }
                 $cred_html .= '</div>';
+                // 首次展示时追加醒目的安全提示
+                if ($show_full_key) {
+                    $cred_html .= '<div class="em09 mt6" style="color:#e74c3c;font-weight:bold;">⚠️ 请立即复制保存以上 AppKey，此密钥仅展示一次！刷新后将被隐藏。</div>';
+                }
             }
 
             $updated_at = !empty($row['updated_at']) ? (string) $row['updated_at'] : '';

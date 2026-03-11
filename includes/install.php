@@ -49,6 +49,7 @@ final class Zibll_Oauth_Install
             revoke_callback_url TEXT NULL,
             ip_whitelist TEXT NULL,
             status TINYINT(3) NOT NULL DEFAULT 0,
+            appkey_revealed TINYINT(1) NOT NULL DEFAULT 0,
             reject_reason TEXT NULL,
             created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
             updated_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',

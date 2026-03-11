@@ -94,6 +94,14 @@ final class Zibll_Oauth_Admin_Audit
         if ($appid !== '') {
             $message .= 'AppID：' . esc_html($appid) . '<br>';
         }
+        // 审核通过时，在邮件中附带完整的 AppKey
+        if ($new_status === Zibll_Oauth_App_DB::STATUS_APPROVED) {
+            $appkey = !empty($app_row['appkey']) ? (string) $app_row['appkey'] : '';
+            if ($appkey !== '') {
+                $message .= 'AppKey：' . esc_html($appkey) . '<br>';
+                $message .= '<b style="color:#e74c3c;">⚠️ 请妥善保存此密钥，它仅通过邮件发送一次，后续将无法再次查看完整密钥。</b><br>';
+            }
+        }
         $message .= '处理时间：' . esc_html(current_time('mysql')) . '<br>';
         if ($new_status === Zibll_Oauth_App_DB::STATUS_REJECTED && $reject_reason !== '') {
             $message .= '驳回原因：' . esc_html((string) $reject_reason) . '<br>';

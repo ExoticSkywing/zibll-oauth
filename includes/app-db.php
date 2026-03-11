@@ -201,6 +201,7 @@ final class Zibll_Oauth_App_DB
             'status_text' => self::get_status_text($status),
             'reject_reason' => !empty($row['reject_reason']) ? (string) $row['reject_reason'] : '',
             'enabled' => $status === self::STATUS_APPROVED,
+            'appkey_revealed' => !empty($row['appkey_revealed']) ? (int) $row['appkey_revealed'] : 0,
         );
     }
 
@@ -432,8 +433,9 @@ final class Zibll_Oauth_App_DB
         $table = self::table_name();
         $ok = $wpdb->update($table, array(
             'appkey' => $new_key,
+            'appkey_revealed' => 0,
             'updated_at' => current_time('mysql'),
-        ), array('id' => $id), array('%s', '%s'), array('%d'));
+        ), array('id' => $id), array('%s', '%d', '%s'), array('%d'));
 
         if ($ok === false) {
             return new WP_Error('db_error', '轮转失败');
@@ -441,5 +443,33 @@ final class Zibll_Oauth_App_DB
 
         self::invalidate((string) $row['appid'], $id, $user_id);
         return $new_key;
+    }
+
+    /**
+     * 将 appkey_revealed 标记为已展示
+     * 标记后前台将不会再显示完整的 AppKey
+     */
+    public static function mark_appkey_revealed($id)
+    {
+        $id = (int) $id;
+        if ($id <= 0) {
+            return false;
+        }
+
+        $row = self::get_by_id($id);
+        if (!$row) {
+            return false;
+        }
+
+        global $wpdb;
+        $table = self::table_name();
+        $ok = $wpdb->update($table, array(
+            'appkey_revealed' => 1,
+        ), array('id' => $id), array('%d'), array('%d'));
+
+        if ($ok !== false) {
+            self::invalidate((string) $row['appid'], $id, (int) $row['user_id']);
+        }
+        return $ok !== false;
     }
 }
