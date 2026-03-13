@@ -22,6 +22,7 @@ require_once __DIR__ . '/includes/admin-log.php';
 require_once __DIR__ . '/includes/service.php';
 require_once __DIR__ . '/includes/rest.php';
 require_once __DIR__ . '/includes/rest-points.php';
+require_once __DIR__ . '/includes/rest-usermeta.php';
 
 final class Zibll_OAuth_Plugin
 {

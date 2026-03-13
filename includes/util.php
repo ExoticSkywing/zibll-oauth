@@ -691,6 +691,12 @@ final class Zibll_Oauth_Provider_Util
             $data['balance'] = (float) $balance;
         }
 
+        // 如果用户已绑定 TG，附带 tg_uid
+        $tg_uid = get_user_meta($user_id, '_xingxy_telegram_uid', true);
+        if ($tg_uid !== '' && $tg_uid !== false) {
+            $data['tg_uid'] = (int) $tg_uid;
+        }
+
         return $data;
     }
 

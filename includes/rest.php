@@ -87,6 +87,18 @@ final class Zibll_Oauth_Rest
 			'callback' => array('Zibll_Oauth_Points', 'profile'),
 			'permission_callback' => '__return_true',
 		));
+
+		register_rest_route(self::REST_NAMESPACE, '/user/bindtg', array(
+			'methods'  => 'POST',
+			'callback' => array('Zibll_Oauth_Usermeta', 'bindtg'),
+			'permission_callback' => '__return_true',
+		));
+
+		register_rest_route(self::REST_NAMESPACE, '/user/tgbind', array(
+			'methods'  => 'GET',
+			'callback' => array('Zibll_Oauth_Usermeta', 'tgbind'),
+			'permission_callback' => '__return_true',
+		));
 	}
 
     public static function health()
