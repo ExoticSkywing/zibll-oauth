@@ -660,6 +660,7 @@ final class Zibll_Oauth_Provider_Util
 
         $data = array(
             'openid' => $openid,
+            'uid' => (int) $user->ID,
             'name' => (string) $user->display_name,
             'avatar' => $avatar_url,
         );
