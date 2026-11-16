@@ -77,6 +77,29 @@ final class Zibll_Oauth_Usermeta
             return new WP_Error('user_not_found', 'OpenID 对应的用户不存在', array('status' => 404));
         }
 
+        // The ecosystem module may own all TG writes during bot migration.
+        $managed = apply_filters('xingxy_ecosystem_legacy_bind', null, $appid, $user_id, $tg_uid, $request);
+        if ($managed !== null) {
+            return $managed;
+        }
+
+        global $wpdb;
+        // 1. 防抢绑检查：该 tg_uid 是否已被其他 WP 账号绑定？
+        $existing_user_id = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value = %s LIMIT 1",
+            self::META_KEY,
+            $tg_uid
+        ));
+        if ($existing_user_id > 0 && $existing_user_id !== $user_id) {
+            return new WP_Error('tg_already_bound', '该 Telegram 账号已被其他站点账号绑定', array('status' => 409));
+        }
+
+        // 2. 防多绑检查：当前 WP 账号是否已绑定了其他 tg_uid？
+        $current_bound_tg = (string) get_user_meta($user_id, self::META_KEY, true);
+        if ($current_bound_tg !== '' && $current_bound_tg !== (string) $tg_uid) {
+            return new WP_Error('user_already_bound', '该站点账号已绑定其他 Telegram 账号，请先解绑', array('status' => 409));
+        }
+
         // 写入 usermeta（使用 WordPress 原生函数，尊重 hooks 和缓存）
         update_user_meta($user_id, self::META_KEY, $tg_uid);
 
@@ -200,6 +223,11 @@ final class Zibll_Oauth_Usermeta
         $expected_sign = md5($appid . $tg_uid . $appkey);
         if (!hash_equals($expected_sign, $sign)) {
             return new WP_Error('invalid_sign', '签名验证失败', array('status' => 403));
+        }
+
+        $managed = apply_filters('xingxy_ecosystem_legacy_unbind', null, $appid, $tg_uid, $request);
+        if ($managed !== null) {
+            return $managed;
         }
 
         // 通过 tg_uid 反查 user_id

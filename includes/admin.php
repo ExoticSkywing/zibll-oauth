@@ -59,6 +59,17 @@ final class Zibll_Oauth_Admin
                     ),
                 ),
                 array(
+                    'id'       => 'zibll_oauth_points_write_appids',
+                    'type'     => 'textarea',
+                    'title'    => '积分写入应用白名单',
+                    'subtitle' => '允许调用 /points/add 给站点用户入账的 OAuth 应用',
+                    'desc'     => '每行或逗号一个 AppID。留空则全部拒绝；仅用于受控的 Telegram/服务积分兑换，不代表财务权限。',
+                    'default'  => '',
+                    'attributes' => array(
+                        'rows' => 6,
+                    ),
+                ),
+                array(
                     'id'      => 'zibll_oauth_code_expires',
                     'type'    => 'spinner',
                     'title'   => '授权码有效期',
@@ -92,6 +103,7 @@ final class Zibll_Oauth_Admin
             wp_cache_delete('options:zibll_oauth_options', Zibll_Oauth_Options::CACHE_GROUP);
             if (class_exists('Zibll_Oauth_Options') && method_exists('Zibll_Oauth_Options', 'cache_delete')) {
                 Zibll_Oauth_Options::cache_delete('developer_whitelist');
+                Zibll_Oauth_Options::cache_delete('points_write_appids');
             }
         }
 

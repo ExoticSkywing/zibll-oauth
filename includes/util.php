@@ -259,6 +259,7 @@ final class Zibll_Oauth_Provider_Util
         ));
 
         $fallback = self::deterministic_openid($appid, $user_id);
+        update_user_meta($user_id, $key, $fallback);
         wp_cache_set($cache_key, $fallback, self::CACHE_GROUP, 3600);
         return $fallback;
     }
@@ -659,10 +660,12 @@ final class Zibll_Oauth_Provider_Util
         }
 
         $data = array(
-            'openid' => $openid,
-            'uid' => (int) $user->ID,
-            'name' => (string) $user->display_name,
-            'avatar' => $avatar_url,
+            'openid'  => $openid,
+            'sub'     => $openid,
+            'uid'     => (int) $user->ID,
+            'name'    => (string) $user->display_name,
+            'avatar'  => $avatar_url,
+            'picture' => $avatar_url,
         );
 
         if (in_array('email', $scopes, true)) {

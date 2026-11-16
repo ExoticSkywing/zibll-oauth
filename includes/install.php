@@ -125,5 +125,51 @@ final class Zibll_Oauth_Install
         ) {$charset};";
 
         dbDelta($sql_audit);
+
+        $code_table = $wpdb->prefix . 'zibll_oauth_code';
+        $sql_code = "CREATE TABLE {$code_table} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            code VARCHAR(64) NOT NULL DEFAULT '',
+            appid VARCHAR(64) NOT NULL DEFAULT '',
+            user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
+            scope VARCHAR(255) NOT NULL DEFAULT '',
+            finance_grant TINYINT(1) NOT NULL DEFAULT 0,
+            redirect_uri TEXT NULL,
+            code_challenge VARCHAR(128) NOT NULL DEFAULT '',
+            code_challenge_method VARCHAR(16) NOT NULL DEFAULT '',
+            used TINYINT(1) NOT NULL DEFAULT 0,
+            expires_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            PRIMARY KEY  (id),
+            UNIQUE KEY code (code),
+            KEY appid (appid),
+            KEY user_id (user_id),
+            KEY used (used),
+            KEY expires_at (expires_at)
+        ) {$charset};";
+
+        dbDelta($sql_code);
+
+        $points_table = $wpdb->prefix . 'zibll_oauth_points_log';
+        $sql_points = "CREATE TABLE {$points_table} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            appid VARCHAR(64) NOT NULL DEFAULT '',
+            user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
+            openid VARCHAR(64) NOT NULL DEFAULT '',
+            order_no VARCHAR(64) NOT NULL DEFAULT '',
+            amount INT(11) NOT NULL DEFAULT 0,
+            balance INT(11) NOT NULL DEFAULT 0,
+            description VARCHAR(255) NOT NULL DEFAULT '',
+            status TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            PRIMARY KEY  (id),
+            UNIQUE KEY app_order (appid, order_no),
+            KEY appid (appid),
+            KEY user_id (user_id),
+            KEY openid (openid),
+            KEY created_at (created_at)
+        ) {$charset};";
+
+        dbDelta($sql_points);
     }
 }
