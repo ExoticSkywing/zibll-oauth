@@ -69,35 +69,23 @@ final class Zibll_Oauth_Service
         return hash_equals((string) $challenge, $computed);
     }
 
-    public static function revoke_user_tokens($client_id, $user_id)
-    {
-        $client_id = trim((string) $client_id);
-        $user_id = (int) $user_id;
-        if ($client_id === '' || $user_id <= 0) {
-            return;
-        }
-
-        $idx_key = self::refresh_index_key($client_id, $user_id);
-        $rt = get_transient($idx_key);
-        delete_transient($idx_key);
-
-        if (is_string($rt) && trim($rt) !== '') {
-            delete_transient(self::refresh_token_key($rt));
-        }
-    }
-
-    public static function revoke(WP_REST_Request $request)
+    /**
+     * 从请求提取并校验已上线的 OAuth 客户端凭据（支持 Basic Auth 与 POST body 二选一）
+     *
+     * @param WP_REST_Request $request
+     * @return array|WP_REST_Response 成功返回 array($client_id, $site)，失败直接返回标准错误响应
+     */
+    private static function authenticate_client_request(WP_REST_Request $request)
     {
         $credentials = self::extract_client_credentials($request);
         if (is_wp_error($credentials)) {
-            return self::token_error($credentials->get_error_code(), $credentials->get_error_message(), $credentials->get_error_data()['status']);
+            $err_data = $credentials->get_error_data();
+            $status = is_array($err_data) && isset($err_data['status']) ? (int) $err_data['status'] : 400;
+            return self::token_error($credentials->get_error_code(), $credentials->get_error_message(), $status);
         }
         list($client_id, $client_secret) = $credentials;
-        $token = trim((string) $request->get_param('token'));
-        $hint = trim((string) $request->get_param('token_type_hint'));
-
-        if ($client_id === '' || $token === '') {
-            return self::token_error('invalid_request', '缺少必要参数：client_id、token', 400);
+        if ($client_id === '') {
+            return self::token_error('invalid_request', '缺少必要参数：client_id', 400);
         }
 
         $app_row = Zibll_Oauth_App_DB::find_by_appid($client_id);
@@ -114,34 +102,120 @@ final class Zibll_Oauth_Service
             return self::token_error('invalid_client', 'client_secret 无效', 401);
         }
 
-        if ($hint === 'access_token') {
-            $access_data = get_transient(self::token_key($token));
-            if (is_array($access_data) && isset($access_data['appid']) && (string) $access_data['appid'] === $client_id) {
-                delete_transient(self::token_key($token));
-            }
-            return new WP_REST_Response(array('revoked' => true), 200);
-        }
-
-        $rt_data = get_transient(self::refresh_token_key($token));
-        if (!is_array($rt_data) || empty($rt_data['appid']) || (string) $rt_data['appid'] !== $client_id) {
-            return new WP_REST_Response(array('revoked' => true), 200);
-        }
-        delete_transient(self::refresh_token_key($token));
-
-        if ($rt_data && is_array($rt_data) && !empty($rt_data['user_id'])) {
-            $idx_key = self::refresh_index_key($client_id, (int) $rt_data['user_id']);
-            $current = get_transient($idx_key);
-            if (is_string($current) && trim($current) === $token) {
-                delete_transient($idx_key);
-            }
-        }
-
-        return new WP_REST_Response(array('revoked' => true), 200);
+        return array($client_id, $site);
     }
 
-    private static function issue_code($appid, $user_id, $scope, $finance_grant, $redirect_uri, $code_challenge = '', $code_challenge_method = '')
+    /**
+     * 吊销指定用户在指定应用下的全部活跃令牌
+     *
+     * @param string $client_id
+     * @param int    $user_id
+     * @return void
+     */
+    public static function revoke_user_tokens($client_id, $user_id)
+    {
+        Zibll_Oauth_Token_Store::revoke_user_tokens($client_id, $user_id);
+    }
+
+    /**
+     * RFC 7009 令牌吊销接口
+     *
+     * @param WP_REST_Request $request
+     * @return WP_REST_Response
+     */
+    public static function revoke(WP_REST_Request $request)
+    {
+        $auth_result = self::authenticate_client_request($request);
+        if ($auth_result instanceof WP_REST_Response) {
+            return $auth_result;
+        }
+        list($client_id) = $auth_result;
+
+        $token = trim((string) $request->get_param('token'));
+        $hint = trim((string) $request->get_param('token_type_hint'));
+        if ($token === '') {
+            return self::token_error('invalid_request', '缺少必要参数：token', 400);
+        }
+
+        Zibll_Oauth_Token_Store::revoke_token($client_id, $token, $hint);
+
+        return new WP_REST_Response(
+            array('revoked' => true),
+            200,
+            array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache')
+        );
+    }
+
+    /**
+     * OIDC Discovery 发现文档端点
+     *
+     * @return WP_REST_Response
+     */
+    public static function openid_configuration()
+    {
+        return new WP_REST_Response(
+            Zibll_Oauth_OIDC::discovery_document(),
+            200,
+            array('Cache-Control' => 'public, max-age=3600')
+        );
+    }
+
+    /**
+     * OIDC JWKS 公钥集合端点
+     *
+     * @return WP_REST_Response|WP_Error
+     */
+    public static function jwks()
+    {
+        $jwks = Zibll_Oauth_OIDC::public_jwks();
+        if (is_wp_error($jwks)) {
+            return self::token_error('server_error', 'OIDC 公钥暂不可用', 500);
+        }
+        return new WP_REST_Response(
+            $jwks,
+            200,
+            array('Cache-Control' => 'public, max-age=3600')
+        );
+    }
+
+    /**
+     * RFC 7662 令牌内省端点
+     *
+     * @param WP_REST_Request $request
+     * @return WP_REST_Response
+     */
+    public static function introspect(WP_REST_Request $request)
+    {
+        $auth_result = self::authenticate_client_request($request);
+        if ($auth_result instanceof WP_REST_Response) {
+            return $auth_result;
+        }
+        list($client_id, $site) = $auth_result;
+
+        $client_ip = Zibll_Oauth_Provider_Util::client_ip();
+        if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
+            return self::token_error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', 403);
+        }
+
+        $token = trim((string) $request->get_param('token'));
+        $hint = trim((string) $request->get_param('token_type_hint'));
+        $payload = $token === ''
+            ? array('active' => false)
+            : Zibll_Oauth_Token_Store::introspect_token($client_id, $token, $hint);
+
+        return new WP_REST_Response(
+            $payload,
+            200,
+            array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache')
+        );
+    }
+
+    private static function issue_code($appid, $user_id, $scope, $finance_grant, $redirect_uri, $code_challenge = '', $code_challenge_method = '', $nonce = '')
     {
         if (is_wp_error(self::validate_pkce($code_challenge, $code_challenge_method))) {
+            return '';
+        }
+        if (!Zibll_Oauth_OIDC::is_valid_nonce($nonce)) {
             return '';
         }
         $code = Zibll_Oauth_Provider_Util::random_token(32);
@@ -160,10 +234,11 @@ final class Zibll_Oauth_Service
             'redirect_uri'          => (string) $redirect_uri,
             'code_challenge'        => $code_challenge,
             'code_challenge_method' => $code_challenge_method,
+            'nonce'                 => (string) $nonce,
             'used'                  => 0,
             'expires_at'            => gmdate('Y-m-d H:i:s', time() + 600),
             'created_at'            => gmdate('Y-m-d H:i:s'),
-        ), array('%s', '%s', '%d', '%s', '%d', '%s', '%s', '%s', '%d', '%s', '%s'));
+        ), array('%s', '%s', '%d', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s'));
 
         return $inserted === 1 ? $code : '';
     }
@@ -223,6 +298,10 @@ final class Zibll_Oauth_Service
         $req_redirect_uri = (string) $request->get_param('redirect_uri');
         $client_state = (string) $request->get_param('state');
         $scope = (string) $request->get_param('scope');
+        $oidc_nonce = (string) ($request->get_param('nonce') ?? '');
+        if (!Zibll_Oauth_OIDC::is_valid_nonce($oidc_nonce)) {
+            self::authorize_error('invalid_request', 'nonce 参数格式无效', 400);
+        }
         $code_challenge = $request->get_param('code_challenge') ?? '';
         $code_challenge_method = $request->get_param('code_challenge_method') ?? '';
         $pkce = self::validate_pkce($code_challenge, $code_challenge_method);
@@ -306,13 +385,14 @@ final class Zibll_Oauth_Service
             'deny' => '1',
         )), rest_url(Zibll_Oauth_Rest::REST_NAMESPACE . '/authorize'));
 
-        $consent_nonce = wp_create_nonce(self::nonce_action($client_id, $redirect_uri, $scope, $client_state, $code_challenge, $code_challenge_method));
+        $consent_nonce = wp_create_nonce(self::nonce_action($client_id, $redirect_uri, $scope, $client_state, $code_challenge, $code_challenge_method, false, $oidc_nonce));
         $content = Zibll_Oauth_Provider_Util::render_consent_page($site, $share_items, $deny_url, array(
             'client_id' => $client_id,
             'response_type' => 'code',
             'redirect_uri' => $req_redirect_uri,
             'state' => $client_state,
             'scope' => $scope,
+            'oidc_nonce' => $oidc_nonce,
             'code_challenge' => $code_challenge,
             'code_challenge_method' => $code_challenge_method,
             'consent_nonce' => $consent_nonce,
@@ -409,124 +489,75 @@ final class Zibll_Oauth_Service
     public static function token(WP_REST_Request $request)
     {
         $grant_type = trim((string) $request->get_param('grant_type'));
-        $credentials = self::extract_client_credentials($request);
-        if (is_wp_error($credentials)) {
-            return self::token_error($credentials->get_error_code(), $credentials->get_error_message(), $credentials->get_error_data()['status']);
-        }
-        list($client_id, $client_secret) = $credentials;
-        $code = (string) $request->get_param('code');
-        $redirect_uri = (string) $request->get_param('redirect_uri');
-        $refresh_token = (string) $request->get_param('refresh_token');
-
         if ($grant_type !== 'authorization_code' && $grant_type !== 'refresh_token') {
             return self::token_error('unsupported_grant_type', 'grant_type 必须为 authorization_code 或 refresh_token', 400);
         }
 
-        if ($grant_type === 'authorization_code') {
-            if ($client_id === '' || trim($code) === '' || $redirect_uri === '') {
-                return self::token_error('invalid_request', '缺少必要参数：client_id、code、redirect_uri', 400);
-            }
+        $auth_result = self::authenticate_client_request($request);
+        if ($auth_result instanceof WP_REST_Response) {
+            return $auth_result;
         }
+        list($client_id, $site) = $auth_result;
+
+        $code = (string) $request->get_param('code');
+        $redirect_uri = (string) $request->get_param('redirect_uri');
+        $refresh_token = (string) $request->get_param('refresh_token');
+
+        $expires_in = Zibll_Oauth_Options::token_expires();
+        $refresh_ttl = Zibll_Oauth_Token_Store::REFRESH_TTL_DEFAULT;
+        $no_store_headers = array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache');
 
         if ($grant_type === 'refresh_token') {
-            if ($client_id === '' || trim($refresh_token) === '') {
-                return self::token_error('invalid_request', '缺少必要参数：client_id、refresh_token', 400);
+            if (trim($refresh_token) === '') {
+                return self::token_error('invalid_request', '缺少必要参数：refresh_token', 400);
             }
+
+            $rotate_param = $request->get_param('rotate_refresh_token');
+            $rotate_requested = !($rotate_param === '0' || $rotate_param === 0 || $rotate_param === false || $rotate_param === 'false');
+            $allow_legacy_no_rotate = Zibll_Oauth_Options::allow_legacy_no_rotate();
+
+            $issued = Zibll_Oauth_Token_Store::rotate_refresh_token(
+                $refresh_token,
+                $client_id,
+                $expires_in,
+                $refresh_ttl,
+                $rotate_requested,
+                $allow_legacy_no_rotate
+            );
+
+            if (is_wp_error($issued)) {
+                $err_data = $issued->get_error_data();
+                $status = is_array($err_data) && isset($err_data['status']) ? (int) $err_data['status'] : 400;
+                return self::token_error($issued->get_error_code(), $issued->get_error_message(), $status);
+            }
+
+            $response_body = array(
+                'access_token'             => $issued['access_token'],
+                'token_type'               => 'bearer',
+                'expires_in'               => $issued['expires_in'],
+                'refresh_token'            => $issued['refresh_token'],
+                'refresh_token_expires_in' => $issued['refresh_token_expires_in'],
+                'scope'                    => $issued['scope'],
+            );
+
+            if (Zibll_Oauth_OIDC::has_openid_scope($issued['scope'])) {
+                $id_token = Zibll_Oauth_OIDC::issue_id_token(
+                    $client_id,
+                    (int) $issued['user_id'],
+                    (string) $issued['scope'],
+                    (string) $issued['access_token']
+                );
+                if (is_wp_error($id_token)) {
+                    return self::token_error('server_error', '签发 id_token 失败', 500);
+                }
+                $response_body['id_token'] = $id_token;
+            }
+
+            return new WP_REST_Response($response_body, 200, $no_store_headers);
         }
 
-        $app_row = Zibll_Oauth_App_DB::find_by_appid($client_id);
-        if (!$app_row) {
-            return self::token_error('unauthorized_client', 'client_id 无效或未配置', 403);
-        }
-
-        $site = Zibll_Oauth_App_DB::to_site_array($app_row);
-        if (empty($site['enabled'])) {
-            return self::token_error('unauthorized_client', '应用暂未上线，请联系应用管理员', 403);
-        }
-
-        if ($client_secret === '' || empty($site['appkey']) || !hash_equals((string) $site['appkey'], $client_secret)) {
-            return self::token_error('invalid_client', 'client_secret 无效', 401);
-        }
-
-        $refresh_ttl = 180 * DAY_IN_SECONDS;
-
-        if ($grant_type === 'refresh_token') {
-            $rt_data = get_transient(self::refresh_token_key($refresh_token));
-            if (!$rt_data || !is_array($rt_data)) {
-                return self::token_error('invalid_grant', 'refresh_token 无效或已过期', 400);
-            }
-
-            $rotate = $request->get_param('rotate_refresh_token');
-            $rotate = !($rotate === '0' || $rotate === 0 || $rotate === false || $rotate === 'false');
-
-            if (empty($rt_data['appid']) || (string) $rt_data['appid'] !== (string) $client_id) {
-                return self::token_error('invalid_grant', 'refresh_token 与应用不匹配', 400);
-            }
-            if (empty($rt_data['user_id'])) {
-                return self::token_error('invalid_grant', 'refresh_token 数据不完整', 400);
-            }
-            if (!Zibll_Oauth_Grant::is_granted($client_id, (int) $rt_data['user_id'], !empty($rt_data['finance_grant']))) {
-                return self::token_error('invalid_grant', '用户授权已失效', 400);
-            }
-            if ($rotate) {
-                delete_transient(self::refresh_token_key($refresh_token));
-            }
-
-            $access_token = Zibll_Oauth_Provider_Util::random_token(40);
-            if ($access_token === '') {
-                return self::token_error('server_error', '生成 access_token 失败', 500);
-            }
-            $expires_in = Zibll_Oauth_Options::token_expires();
-
-            set_transient(self::token_key($access_token), array(
-                'appid' => $client_id,
-                'user_id' => (int) $rt_data['user_id'],
-                'scope' => !empty($rt_data['scope']) ? (string) $rt_data['scope'] : 'basic',
-                'finance_grant' => !empty($rt_data['finance_grant']) ? true : false,
-                'created_at' => time(),
-            ), $expires_in);
-
-            if (!$rotate) {
-                set_transient(self::refresh_token_key($refresh_token), array(
-                    'appid' => $client_id,
-                    'user_id' => (int) $rt_data['user_id'],
-                    'scope' => !empty($rt_data['scope']) ? (string) $rt_data['scope'] : 'basic',
-                    'finance_grant' => !empty($rt_data['finance_grant']) ? true : false,
-                    'created_at' => time(),
-                ), $refresh_ttl);
-
-                set_transient(self::refresh_index_key($client_id, (int) $rt_data['user_id']), $refresh_token, $refresh_ttl);
-
-                return new WP_REST_Response(array(
-                    'access_token' => $access_token,
-                    'token_type' => 'bearer',
-                    'expires_in' => $expires_in,
-                    'refresh_token' => $refresh_token,
-                    'refresh_token_expires_in' => $refresh_ttl,
-                ), 200, array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache'));
-            }
-
-            $new_refresh = Zibll_Oauth_Provider_Util::random_token(40);
-            if ($new_refresh === '') {
-                return self::token_error('server_error', '生成 refresh_token 失败', 500);
-            }
-            set_transient(self::refresh_token_key($new_refresh), array(
-                'appid' => $client_id,
-                'user_id' => (int) $rt_data['user_id'],
-                'scope' => !empty($rt_data['scope']) ? (string) $rt_data['scope'] : 'basic',
-                'finance_grant' => !empty($rt_data['finance_grant']) ? true : false,
-                'created_at' => time(),
-            ), $refresh_ttl);
-
-            set_transient(self::refresh_index_key($client_id, (int) $rt_data['user_id']), $new_refresh, $refresh_ttl);
-
-            return new WP_REST_Response(array(
-                'access_token' => $access_token,
-                'token_type' => 'bearer',
-                'expires_in' => $expires_in,
-                'refresh_token' => $new_refresh,
-                'refresh_token_expires_in' => $refresh_ttl,
-            ), 200, array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache'));
+        if (trim($code) === '' || $redirect_uri === '') {
+            return self::token_error('invalid_request', '缺少必要参数：code、redirect_uri', 400);
         }
 
         $site_redirect_uri = !empty($site['redirect_uri']) ? (string) $site['redirect_uri'] : '';
@@ -537,56 +568,84 @@ final class Zibll_Oauth_Service
 
         $code_data = self::consume_code($code, $client_id, $redirect_uri, $request->get_param('code_verifier'));
         if (is_wp_error($code_data)) {
-            return self::token_error($code_data->get_error_code(), $code_data->get_error_message(), $code_data->get_error_data()['status']);
+            $err_data = $code_data->get_error_data();
+            $status = is_array($err_data) && isset($err_data['status']) ? (int) $err_data['status'] : 400;
+            return self::token_error($code_data->get_error_code(), $code_data->get_error_message(), $status);
         }
         if (!$code_data) {
             return self::token_error('invalid_grant', 'code 无效、已使用或已过期，请重新授权', 400);
         }
 
-        $access_token = Zibll_Oauth_Provider_Util::random_token(40);
-        if ($access_token === '') {
-            return self::token_error('server_error', '生成 access_token 失败', 500);
+        $user_id = (int) $code_data['user_id'];
+        $scope = !empty($code_data['scope']) ? (string) $code_data['scope'] : 'basic';
+        $finance_grant = !empty($code_data['finance_grant']);
+
+        $issued = Zibll_Oauth_Token_Store::issue_pair(
+            $client_id,
+            $user_id,
+            $scope,
+            $finance_grant,
+            $expires_in,
+            $refresh_ttl
+        );
+        if (is_wp_error($issued)) {
+            $err_data = $issued->get_error_data();
+            $status = is_array($err_data) && isset($err_data['status']) ? (int) $err_data['status'] : 500;
+            return self::token_error($issued->get_error_code(), $issued->get_error_message(), $status);
         }
-        $expires_in = Zibll_Oauth_Options::token_expires();
 
-        $issued_refresh = Zibll_Oauth_Provider_Util::random_token(40);
-        if ($issued_refresh === '') {
-            return self::token_error('server_error', '生成 refresh_token 失败', 500);
+        $response_body = array(
+            'access_token'             => $issued['access_token'],
+            'token_type'               => 'bearer',
+            'expires_in'               => $issued['expires_in'],
+            'refresh_token'            => $issued['refresh_token'],
+            'refresh_token_expires_in' => $issued['refresh_token_expires_in'],
+            'scope'                    => $scope,
+        );
+
+        if (Zibll_Oauth_OIDC::has_openid_scope($scope)) {
+            $code_nonce = !empty($code_data['nonce']) ? (string) $code_data['nonce'] : '';
+            $auth_time = !empty($code_data['created_at']) ? (int) strtotime((string) $code_data['created_at'] . ' UTC') : time();
+            $id_token = Zibll_Oauth_OIDC::issue_id_token(
+                $client_id,
+                $user_id,
+                $scope,
+                (string) $issued['access_token'],
+                $code_nonce,
+                $auth_time
+            );
+            if (is_wp_error($id_token)) {
+                // 签发 id_token 失败时立即作废该次令牌家族，保证原子性
+                if (!empty($issued['family_id'])) {
+                    Zibll_Oauth_Token_Store::revoke_family($issued['family_id']);
+                }
+                return self::token_error('server_error', '签发 id_token 失败', 500);
+            }
+            $response_body['id_token'] = $id_token;
         }
-
-        set_transient(self::token_key($access_token), array(
-            'appid' => $client_id,
-            'user_id' => (int) $code_data['user_id'],
-            'scope' => !empty($code_data['scope']) ? (string) $code_data['scope'] : 'basic',
-            'finance_grant' => !empty($code_data['finance_grant']) ? true : false,
-            'created_at' => time(),
-        ), $expires_in);
-
-        set_transient(self::refresh_token_key($issued_refresh), array(
-            'appid' => $client_id,
-            'user_id' => (int) $code_data['user_id'],
-            'scope' => !empty($code_data['scope']) ? (string) $code_data['scope'] : 'basic',
-            'finance_grant' => !empty($code_data['finance_grant']) ? true : false,
-            'created_at' => time(),
-        ), $refresh_ttl);
-
-        set_transient(self::refresh_index_key($client_id, (int) $code_data['user_id']), $issued_refresh, $refresh_ttl);
 
         if (class_exists('Zibll_Oauth_Admin_Log') && method_exists('Zibll_Oauth_Admin_Log', 'add_log')) {
-            Zibll_Oauth_Admin_Log::add_log($client_id, (int) $code_data['user_id'], 'token_issue', '通过 code 获取 access_token');
+            Zibll_Oauth_Admin_Log::add_log($client_id, $user_id, 'token_issue', '通过 code 获取 access_token');
         }
 
-        return new WP_REST_Response(array(
-            'access_token' => $access_token,
-            'token_type' => 'bearer',
-            'expires_in' => $expires_in,
-            'refresh_token' => $issued_refresh,
-            'refresh_token_expires_in' => $refresh_ttl,
-        ), 200, array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache'));
+        return new WP_REST_Response($response_body, 200, $no_store_headers);
     }
 
-    public static function userinfo(WP_REST_Request $request)
+    /**
+     * 解析并校验 Bearer access_token 及其所属应用、IP 白名单与授权状态
+     *
+     * @param WP_REST_Request $request
+     * @param array           $options
+     * @return array|WP_Error 成功返回包含 token/data/appid/user_id/site 的数组
+     */
+    private static function authenticate_bearer_request(WP_REST_Request $request, $options = array())
     {
+        $require_user = array_key_exists('require_user', $options) ? (bool) $options['require_user'] : true;
+        $require_app = array_key_exists('require_app', $options) ? (bool) $options['require_app'] : true;
+        $require_enabled = array_key_exists('require_enabled', $options) ? (bool) $options['require_enabled'] : true;
+        $require_grant = array_key_exists('require_grant', $options) ? (bool) $options['require_grant'] : false;
+        $require_finance = array_key_exists('require_finance', $options) ? (bool) $options['require_finance'] : false;
+
         $token = '';
         $auth = $request->get_header('authorization');
         if (is_string($auth) && stripos($auth, 'bearer ') === 0) {
@@ -597,12 +656,12 @@ final class Zibll_Oauth_Service
             return new WP_Error('missing_token', '缺少 access_token（请使用 Authorization: Bearer <token>）', array('status' => 401));
         }
 
-        $data = get_transient(self::token_key($token));
+        $data = Zibll_Oauth_Token_Store::resolve_access_token($token);
         if (!$data || !is_array($data)) {
             return new WP_Error('token_invalid', 'access_token 无效或已过期', array('status' => 401));
         }
 
-        if (empty($data['user_id'])) {
+        if ($require_user && empty($data['user_id'])) {
             return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 user_id', array('status' => 401));
         }
 
@@ -611,30 +670,62 @@ final class Zibll_Oauth_Service
             return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 appid', array('status' => 401));
         }
 
-        $user_id = (int) $data['user_id'];
+        $user_id = !empty($data['user_id']) ? (int) $data['user_id'] : 0;
+        $site = array();
 
         $app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
         if (!$app_row) {
-            return new WP_Error('invalid_appid', 'AppID 无效或未配置', array('status' => 403));
+            if ($require_app) {
+                return new WP_Error('invalid_appid', 'AppID 无效或未配置', array('status' => 403));
+            }
+        } else {
+            $site = Zibll_Oauth_App_DB::to_site_array($app_row);
+
+            // 先校验应用 IP 白名单，防止未授权来源探测应用启用状态
+            $client_ip = Zibll_Oauth_Provider_Util::client_ip();
+            if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
+                return new WP_Error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', array('status' => 403, 'ip' => $client_ip));
+            }
+
+            if ($require_enabled && empty($site['enabled'])) {
+                return new WP_Error('app_not_online', '应用暂未上线，请联系应用管理员', array('status' => 403));
+            }
+
+            if ($require_finance) {
+                if (empty($site['finance_enabled'])) {
+                    return new WP_Error('finance_not_enabled', '该应用未开启财务权限', array('status' => 403));
+                }
+                if (!Zibll_Oauth_Grant::is_granted($appid, $user_id, true)) {
+                    return new WP_Error('finance_not_granted', '用户未授权该应用的财务权限', array('status' => 403));
+                }
+            } elseif ($require_grant && !Zibll_Oauth_Grant::is_granted($appid, $user_id)) {
+                return new WP_Error('not_authorized', '用户未授权该应用', array('status' => 403));
+            }
         }
 
-        $site = Zibll_Oauth_App_DB::to_site_array($app_row);
+        return array(
+            'token'   => $token,
+            'data'    => $data,
+            'appid'   => $appid,
+            'user_id' => $user_id,
+            'site'    => $site,
+        );
+    }
 
-        if (empty($site['enabled'])) {
-            return new WP_Error('app_not_online', '应用暂未上线，请联系应用管理员', array('status' => 403));
+    public static function userinfo(WP_REST_Request $request)
+    {
+        $auth = self::authenticate_bearer_request($request, array(
+            'require_enabled' => true,
+            'require_grant'   => true,
+        ));
+        if (is_wp_error($auth)) {
+            return $auth;
         }
 
-        // 应用 IP 白名单校验（若有配置）
-        $client_ip = Zibll_Oauth_Provider_Util::client_ip();
-        if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
-            return new WP_Error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', array('status' => 403, 'ip' => $client_ip));
-        }
-
-        $is_granted = Zibll_Oauth_Grant::is_granted($appid, $user_id);
-        if (!$is_granted) {
-            return new WP_Error('not_authorized', '用户未授权该应用', array('status' => 403));
-        }
-
+        $data = $auth['data'];
+        $appid = $auth['appid'];
+        $user_id = $auth['user_id'];
+        $site = $auth['site'];
         $scope = !empty($data['scope']) ? (string) $data['scope'] : 'basic';
 
         $include_balance = false;
@@ -650,27 +741,15 @@ final class Zibll_Oauth_Service
             return $userinfo;
         }
 
-        return new WP_REST_Response(array(
+        // 同时保留顶层标准 OIDC 字段与历史 userinfo 嵌套字段，确保新旧消费方平滑兼容
+        $response_body = array_merge($userinfo, array(
             'userinfo' => $userinfo,
-        ), 200, array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache'));
+        ));
+
+        return new WP_REST_Response($response_body, 200, array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache'));
     }
 
-    private static function token_key($token)
-    {
-        return 'zibll_oauth_token_' . md5((string) $token);
-    }
-
-    private static function refresh_token_key($token)
-    {
-        return 'zibll_oauth_refresh_' . md5((string) $token);
-    }
-
-    private static function refresh_index_key($client_id, $user_id)
-    {
-        return 'zibll_oauth_refresh_idx_' . md5((string) $client_id . '|' . (int) $user_id);
-    }
-
-    private static function nonce_action($appid, $redirect_uri, $scope, $client_state, $code_challenge, $code_challenge_method, $finance_grant = false)
+    private static function nonce_action($appid, $redirect_uri, $scope, $client_state, $code_challenge, $code_challenge_method, $finance_grant = false, $oidc_nonce = '')
     {
         return 'zibll_oauth_consent_' . hash('sha256', wp_json_encode(array(
             (string) $appid,
@@ -680,52 +759,22 @@ final class Zibll_Oauth_Service
             (string) $code_challenge,
             (string) $code_challenge_method,
             (bool) $finance_grant,
+            (string) $oidc_nonce,
         )));
     }
 
     public static function unionid(WP_REST_Request $request)
     {
-        $token = '';
-        $auth = $request->get_header('authorization');
-        if (is_string($auth) && stripos($auth, 'bearer ') === 0) {
-            $token = trim(substr($auth, 7));
-        }
-        if ($token === '') {
-            return new WP_Error('missing_token', '缺少 access_token（请使用 Authorization: Bearer <token>）', array('status' => 401));
-        }
-
-        $data = get_transient(self::token_key($token));
-        if (!$data || !is_array($data)) {
-            return new WP_Error('token_invalid', 'access_token 无效或已过期', array('status' => 401));
-        }
-        if (empty($data['user_id'])) {
-            return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 user_id', array('status' => 401));
+        $auth = self::authenticate_bearer_request($request, array(
+            'require_enabled' => false,
+            'require_grant'   => true,
+        ));
+        if (is_wp_error($auth)) {
+            return $auth;
         }
 
-        $appid = !empty($data['appid']) ? (string) $data['appid'] : '';
-        if ($appid === '') {
-            return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 appid', array('status' => 401));
-        }
-
-        $user_id = (int) $data['user_id'];
-
-        $app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
-        if (!$app_row) {
-            return new WP_Error('invalid_appid', 'AppID 无效或未配置', array('status' => 403));
-        }
-
-        $site = Zibll_Oauth_App_DB::to_site_array($app_row);
-
-        // 应用 IP 白名单校验（若有配置）
-        $client_ip = Zibll_Oauth_Provider_Util::client_ip();
-        if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
-            return new WP_Error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', array('status' => 403, 'ip' => $client_ip));
-        }
-
-        $is_granted = Zibll_Oauth_Grant::is_granted($appid, $user_id);
-        if (!$is_granted) {
-            return new WP_Error('not_authorized', '用户未授权该应用', array('status' => 403));
-        }
+        $appid = $auth['appid'];
+        $user_id = $auth['user_id'];
 
         $openid = Zibll_Oauth_Provider_Util::get_openid($user_id, $appid);
         if ($openid === '') {
@@ -733,9 +782,9 @@ final class Zibll_Oauth_Service
         }
 
         return new WP_REST_Response(array(
-            'openid' => $openid,
-            'unionid' => (string) ((int) $data['user_id']),
-        ), 200);
+            'openid'  => $openid,
+            'unionid' => (string) $user_id,
+        ), 200, array('Cache-Control' => 'no-store', 'Pragma' => 'no-cache'));
     }
 
     public static function ajax_approve()
@@ -754,6 +803,11 @@ final class Zibll_Oauth_Service
         $req_redirect_uri = isset($_POST['redirect_uri']) ? (string) wp_unslash($_POST['redirect_uri']) : '';
         $client_state = isset($_POST['state']) ? (string) wp_unslash($_POST['state']) : '';
         $scope = isset($_POST['scope']) ? (string) wp_unslash($_POST['scope']) : '';
+        $oidc_nonce = isset($_POST['oidc_nonce']) ? (string) wp_unslash($_POST['oidc_nonce']) : '';
+        if (!Zibll_Oauth_OIDC::is_valid_nonce($oidc_nonce)) {
+            echo json_encode(array('error' => 1, 'msg' => 'nonce 参数格式无效'));
+            exit;
+        }
         $code_challenge = wp_unslash($_POST['code_challenge'] ?? '');
         $code_challenge_method = wp_unslash($_POST['code_challenge_method'] ?? '');
         $pkce = self::validate_pkce($code_challenge, $code_challenge_method);
@@ -798,7 +852,7 @@ final class Zibll_Oauth_Service
         if ($scope === '') {
             $scope = !empty($site['default_scope']) ? (string) $site['default_scope'] : 'basic';
         }
-        if (!$consent_nonce || !wp_verify_nonce($consent_nonce, self::nonce_action($client_id, $redirect_uri, $scope, $client_state, $code_challenge, $code_challenge_method))) {
+        if (!$consent_nonce || !wp_verify_nonce($consent_nonce, self::nonce_action($client_id, $redirect_uri, $scope, $client_state, $code_challenge, $code_challenge_method, false, $oidc_nonce))) {
             echo json_encode(array('error' => 1, 'msg' => '授权确认已失效，请刷新页面重新授权'));
             exit;
         }
@@ -812,7 +866,7 @@ final class Zibll_Oauth_Service
         Zibll_Oauth_Grant::insert($client_id, $user_id, $scope, !empty($site['id']) ? (int) $site['id'] : 0);
 
         $finance_grant = 0;
-        $code = self::issue_code($client_id, $user_id, $scope, $finance_grant, $redirect_uri, $code_challenge, $code_challenge_method);
+        $code = self::issue_code($client_id, $user_id, $scope, $finance_grant, $redirect_uri, $code_challenge, $code_challenge_method, $oidc_nonce);
         if ($code === '') {
             echo json_encode(array('error' => 1, 'msg' => '生成 code 失败'));
             exit;
@@ -1093,57 +1147,17 @@ final class Zibll_Oauth_Service
 
     public static function finance_deduct(WP_REST_Request $request)
     {
-        $token = '';
-        $auth = $request->get_header('authorization');
-        if (is_string($auth) && stripos($auth, 'bearer ') === 0) {
-            $token = trim(substr($auth, 7));
+        $auth = self::authenticate_bearer_request($request, array(
+            'require_enabled' => true,
+            'require_finance' => true,
+        ));
+        if (is_wp_error($auth)) {
+            return $auth;
         }
 
-        if ($token === '') {
-            return new WP_Error('missing_token', '缺少 access_token（请使用 Authorization: Bearer <token>）', array('status' => 401));
-        }
-
-        $data = get_transient(self::token_key($token));
-        if (!$data || !is_array($data)) {
-            return new WP_Error('token_invalid', 'access_token 无效或已过期', array('status' => 401));
-        }
-
-        if (empty($data['user_id'])) {
-            return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 user_id', array('status' => 401));
-        }
-
-        $appid = !empty($data['appid']) ? (string) $data['appid'] : '';
-        if ($appid === '') {
-            return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 appid', array('status' => 401));
-        }
-
-        $user_id = (int) $data['user_id'];
-
-        $app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
-        if (!$app_row) {
-            return new WP_Error('invalid_appid', 'AppID 无效或未配置', array('status' => 403));
-        }
-
-        $site = Zibll_Oauth_App_DB::to_site_array($app_row);
-
-        // 应用 IP 白名单校验（若有配置）
-        $client_ip = Zibll_Oauth_Provider_Util::client_ip();
-        if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
-            return new WP_Error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', array('status' => 403, 'ip' => $client_ip));
-        }
-
-        if (empty($site['enabled'])) {
-            return new WP_Error('app_not_online', '应用暂未上线，请联系应用管理员', array('status' => 403));
-        }
-
-        if (empty($site['finance_enabled'])) {
-            return new WP_Error('finance_not_enabled', '该应用未开启财务权限', array('status' => 403));
-        }
-
-        $is_finance_granted = Zibll_Oauth_Grant::is_granted($appid, $user_id, true);
-        if (!$is_finance_granted) {
-            return new WP_Error('finance_not_granted', '用户未授权该应用的财务权限', array('status' => 403));
-        }
+        $appid = $auth['appid'];
+        $user_id = $auth['user_id'];
+        $site = $auth['site'];
 
         $openid = Zibll_Oauth_Provider_Util::get_openid($user_id, $appid);
         if ($openid === '') {
@@ -1643,26 +1657,17 @@ final class Zibll_Oauth_Service
 
     public static function finance_verify(WP_REST_Request $request)
     {
-        $token = '';
-        $auth = $request->get_header('authorization');
-        if (is_string($auth) && stripos($auth, 'bearer ') === 0) {
-            $token = trim(substr($auth, 7));
+        $auth = self::authenticate_bearer_request($request, array(
+            'require_user'    => false,
+            'require_app'     => false,
+            'require_enabled' => false,
+            'require_grant'   => false,
+        ));
+        if (is_wp_error($auth)) {
+            return $auth;
         }
 
-        if ($token === '') {
-            return new WP_Error('missing_token', '缺少 access_token（请使用 Authorization: Bearer <token>）', array('status' => 401));
-        }
-
-        $data = get_transient(self::token_key($token));
-        if (!$data || !is_array($data)) {
-            return new WP_Error('token_invalid', 'access_token 无效或已过期', array('status' => 401));
-        }
-
-        if (empty($data['appid'])) {
-            return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 appid', array('status' => 401));
-        }
-
-        $appid = (string) $data['appid'];
+        $appid = $auth['appid'];
 
         $trade_no = trim((string) $request->get_param('trade_no'));
         $order_no = trim((string) $request->get_param('order_no'));
@@ -1673,16 +1678,6 @@ final class Zibll_Oauth_Service
 
         global $wpdb;
         $deduct_table = $wpdb->prefix . 'zibll_oauth_deduct';
-
-        // 应用 IP 白名单校验（若有配置）
-        $app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
-        if ($app_row) {
-            $site = Zibll_Oauth_App_DB::to_site_array($app_row);
-            $client_ip = Zibll_Oauth_Provider_Util::client_ip();
-            if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
-                return new WP_Error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', array('status' => 403, 'ip' => $client_ip));
-            }
-        }
 
         $where = '';
         $params = array();
@@ -1752,44 +1747,16 @@ final class Zibll_Oauth_Service
 
 	public static function finance_sign_status(WP_REST_Request $request)
 	{
-		$token = '';
-		$auth = $request->get_header('authorization');
-		if (is_string($auth) && stripos($auth, 'bearer ') === 0) {
-			$token = trim(substr($auth, 7));
+		$auth = self::authenticate_bearer_request($request, array(
+			'require_enabled' => false,
+			'require_grant'   => false,
+		));
+		if (is_wp_error($auth)) {
+			return $auth;
 		}
 
-		if ($token === '') {
-			return new WP_Error('missing_token', '缺少 access_token（请使用 Authorization: Bearer <token>）', array('status' => 401));
-		}
-
-		$data = get_transient(self::token_key($token));
-		if (!$data || !is_array($data)) {
-			return new WP_Error('token_invalid', 'access_token 无效或已过期', array('status' => 401));
-		}
-
-		if (empty($data['user_id'])) {
-			return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 user_id', array('status' => 401));
-		}
-
-		$appid = !empty($data['appid']) ? (string) $data['appid'] : '';
-		if ($appid === '') {
-			return new WP_Error('token_invalid', 'access_token 数据不完整：缺少 appid', array('status' => 401));
-		}
-
-		$user_id = (int) $data['user_id'];
-
-		$app_row = Zibll_Oauth_App_DB::find_by_appid($appid);
-		if (!$app_row) {
-			return new WP_Error('invalid_appid', 'AppID 无效或未配置', array('status' => 403));
-		}
-
-		$site = Zibll_Oauth_App_DB::to_site_array($app_row);
-
-		// 应用 IP 白名单校验（若有配置）
-		$client_ip = Zibll_Oauth_Provider_Util::client_ip();
-		if (!Zibll_Oauth_Provider_Util::is_ip_allowed_for_site($site, $client_ip)) {
-			return new WP_Error('ip_not_allowed', '当前 IP 不在应用 IP 白名单中', array('status' => 403, 'ip' => $client_ip));
-		}
+		$appid = $auth['appid'];
+		$user_id = $auth['user_id'];
 
 		$openid = Zibll_Oauth_Provider_Util::get_openid($user_id, $appid);
 		if ($openid === '') {

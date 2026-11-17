@@ -16,6 +16,24 @@ final class Zibll_Oauth_Rest
             'permission_callback' => '__return_true',
         ));
 
+        register_rest_route(self::REST_NAMESPACE, '/\.well-known/openid-configuration', array(
+            'methods'  => 'GET',
+            'callback' => array('Zibll_Oauth_Service', 'openid_configuration'),
+            'permission_callback' => '__return_true',
+        ));
+
+        register_rest_route(self::REST_NAMESPACE, '/jwks', array(
+            'methods'  => 'GET',
+            'callback' => array('Zibll_Oauth_Service', 'jwks'),
+            'permission_callback' => '__return_true',
+        ));
+
+        register_rest_route(self::REST_NAMESPACE, '/introspect', array(
+            'methods'  => 'POST',
+            'callback' => array('Zibll_Oauth_Service', 'introspect'),
+            'permission_callback' => '__return_true',
+        ));
+
         register_rest_route(self::REST_NAMESPACE, '/authorize', array(
             'methods'  => 'GET',
             'callback' => array('Zibll_Oauth_Service', 'authorize'),

@@ -72,6 +72,18 @@ final class Zibll_Oauth_Options
         return max(60, $v);
     }
 
+    /**
+     * 是否允许旧客户端通过 rotate_refresh_token=0 跳过刷新令牌轮换
+     * 默认关闭以强制使用安全的原子轮换与重放检测。
+     *
+     * @return bool
+     */
+    public static function allow_legacy_no_rotate()
+    {
+        $v = self::get('zibll_oauth_allow_legacy_no_rotate', false);
+        return $v === true || $v === '1' || $v === 1 || $v === 'true';
+    }
+
     public static function developer_whitelist_raw()
     {
         return (string) self::get('zibll_oauth_developer_whitelist', '');

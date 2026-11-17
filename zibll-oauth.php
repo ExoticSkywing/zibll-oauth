@@ -19,6 +19,8 @@ require_once __DIR__ . '/includes/user-center.php';
 require_once __DIR__ . '/includes/admin.php';
 require_once __DIR__ . '/includes/admin-audit.php';
 require_once __DIR__ . '/includes/admin-log.php';
+require_once __DIR__ . '/includes/token-store.php';
+require_once __DIR__ . '/includes/oidc.php';
 require_once __DIR__ . '/includes/service.php';
 require_once __DIR__ . '/includes/rest.php';
 require_once __DIR__ . '/includes/rest-points.php';

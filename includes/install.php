@@ -137,6 +137,7 @@ final class Zibll_Oauth_Install
             redirect_uri TEXT NULL,
             code_challenge VARCHAR(128) NOT NULL DEFAULT '',
             code_challenge_method VARCHAR(16) NOT NULL DEFAULT '',
+            nonce VARCHAR(255) NOT NULL DEFAULT '',
             used TINYINT(1) NOT NULL DEFAULT 0,
             expires_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
             created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
@@ -149,6 +150,53 @@ final class Zibll_Oauth_Install
         ) {$charset};";
 
         dbDelta($sql_code);
+
+        $access_token_table = $wpdb->prefix . 'zibll_oauth_access_token';
+        $sql_access_token = "CREATE TABLE {$access_token_table} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            token_hash CHAR(64) NOT NULL DEFAULT '',
+            family_id CHAR(64) NOT NULL DEFAULT '',
+            appid VARCHAR(64) NOT NULL DEFAULT '',
+            user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
+            scope VARCHAR(255) NOT NULL DEFAULT '',
+            finance_grant TINYINT(1) NOT NULL DEFAULT 0,
+            revoked TINYINT(1) NOT NULL DEFAULT 0,
+            expires_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            PRIMARY KEY  (id),
+            UNIQUE KEY token_hash (token_hash),
+            KEY family_id (family_id),
+            KEY app_user (appid, user_id),
+            KEY revoked (revoked),
+            KEY expires_at (expires_at)
+        ) {$charset};";
+
+        dbDelta($sql_access_token);
+
+        $refresh_token_table = $wpdb->prefix . 'zibll_oauth_refresh_token';
+        $sql_refresh_token = "CREATE TABLE {$refresh_token_table} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            token_hash CHAR(64) NOT NULL DEFAULT '',
+            family_id CHAR(64) NOT NULL DEFAULT '',
+            parent_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
+            appid VARCHAR(64) NOT NULL DEFAULT '',
+            user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
+            scope VARCHAR(255) NOT NULL DEFAULT '',
+            finance_grant TINYINT(1) NOT NULL DEFAULT 0,
+            used TINYINT(1) NOT NULL DEFAULT 0,
+            revoked TINYINT(1) NOT NULL DEFAULT 0,
+            used_at DATETIME NULL DEFAULT NULL,
+            expires_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+            PRIMARY KEY  (id),
+            UNIQUE KEY token_hash (token_hash),
+            KEY family_id (family_id),
+            KEY app_user (appid, user_id),
+            KEY used_revoked (used, revoked),
+            KEY expires_at (expires_at)
+        ) {$charset};";
+
+        dbDelta($sql_refresh_token);
 
         $points_table = $wpdb->prefix . 'zibll_oauth_points_log';
         $sql_points = "CREATE TABLE {$points_table} (

@@ -606,7 +606,7 @@ final class Zibll_Oauth_Provider_Util
 
         $scopes = preg_split('/[\s,]+/', $scope);
         $items = array(
-            'openid' => 'OpenID（应用内用户标识）',
+            'openid' => 'OpenID（应用内用户唯一标识）',
             'name' => '昵称/显示名称',
             'avatar' => '头像',
         );
@@ -621,6 +621,14 @@ final class Zibll_Oauth_Provider_Util
 
         if (in_array('phone', $scopes, true)) {
             $items['phone'] = '绑定手机号';
+        }
+
+        if (in_array('telegram', $scopes, true)) {
+            $items['telegram'] = 'Telegram 绑定身份标识';
+        }
+
+        if (in_array('segments', $scopes, true)) {
+            $items['segments'] = '星小芽分群与服务权益标签';
         }
 
         return $items;
@@ -670,6 +678,7 @@ final class Zibll_Oauth_Provider_Util
 
         if (in_array('email', $scopes, true)) {
             $data['email'] = (string) $user->user_email;
+            $data['email_verified'] = $data['email'] !== '';
         }
 
         if (in_array('profile', $scopes, true)) {
@@ -699,6 +708,23 @@ final class Zibll_Oauth_Provider_Util
         $tg_uid = get_user_meta($user_id, '_xingxy_telegram_uid', true);
         if ($tg_uid !== '' && $tg_uid !== false) {
             $data['tg_uid'] = (int) $tg_uid;
+        }
+
+        // 按 segments scope 安全透出业务分群标签
+        if (in_array('segments', $scopes, true)) {
+            $raw_segments = get_user_meta($user_id, '_xingxy_segments', true);
+            $segments = array();
+            if (is_array($raw_segments)) {
+                foreach ($raw_segments as $seg) {
+                    if (is_string($seg)) {
+                        $seg = trim($seg);
+                        if ($seg !== '') {
+                            $segments[] = $seg;
+                        }
+                    }
+                }
+            }
+            $data['segments'] = array_values(array_unique($segments));
         }
 
         return $data;

@@ -89,6 +89,19 @@ final class Zibll_Oauth_Admin
                     'step'    => 60,
                     'unit'    => '秒',
                 ),
+                array(
+                    'id'      => 'zibll_oauth_allow_legacy_no_rotate',
+                    'type'    => 'switcher',
+                    'title'   => '兼容旧版不轮换刷新令牌',
+                    'subtitle'=> '允许传 rotate_refresh_token=0 的旧客户端复用原 refresh_token',
+                    'desc'    => '默认关闭（推荐）。开启后仅建议用于无法持久保存轮换令牌的旧服务端客户端。',
+                    'default' => false,
+                ),
+                array(
+                    'type'    => 'notice',
+                    'style'   => 'info',
+                    'content' => '标准 OIDC Issuer 地址：<code>' . esc_html(Zibll_Oauth_OIDC::issuer()) . '</code><br>Discovery 文档：<code>' . esc_html(Zibll_Oauth_OIDC::issuer() . '/.well-known/openid-configuration') . '</code><br>JWKS 公钥端点：<code>' . esc_html(Zibll_Oauth_OIDC::issuer() . '/jwks') . '</code>',
+                ),
             ),
         ));
     }

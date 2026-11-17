@@ -320,7 +320,15 @@ final class Zibll_Oauth_Ajax
             return 'basic';
         }
         $parts = preg_split('/[\s,]+/', $scope);
-        $allow = array('basic' => true, 'email' => true, 'profile' => true, 'phone' => true);
+        $allow = array(
+            'openid' => true,
+            'basic' => true,
+            'email' => true,
+            'profile' => true,
+            'phone' => true,
+            'telegram' => true,
+            'segments' => true,
+        );
         $out = array();
         foreach ($parts as $p) {
             $p = trim((string) $p);
@@ -582,10 +590,13 @@ final class Zibll_Oauth_Ajax
         $html .= '<p class="muted-2-color em09 mt6">仅对 `/token`、`/userinfo`、`/unionid`、`/finance/*` 等服务端接口生效，未配置则不限制。</p>';
         $html .= '</div>';
         $html .= '<div class="mb10"><div class="muted-2-color em09 mb6">授权范围 scope</div>';
+        $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="openid"' . $checked('openid') . '> openid</label>';
         $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="basic"' . $checked('basic') . '> basic</label>';
         $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="email"' . $checked('email') . '> email</label>';
         $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="profile"' . $checked('profile') . '> profile</label>';
         $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="phone"' . $checked('phone') . '> phone</label>';
+        $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="telegram"' . $checked('telegram') . '> telegram</label>';
+        $html .= '<label class="mr10"><input type="checkbox" name="default_scope[]" value="segments"' . $checked('segments') . '> segments</label>';
         $html .= '</div>';
 
         if ($can_use_finance) {
